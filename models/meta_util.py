@@ -338,7 +338,7 @@ class ParallelUpdate(nn.Module):
     def replicate(self, init_fast_opts):
         models, opts = [], []
         for i, device in enumerate(self.devices):
-            fast_model, fast_opt = init_network(self.module, self.meta_lr, init_fast_opts[i], Adam=True, beta1=0.9, beta2=0.999, device=device)
+            fast_model, fast_opt = init_network(self.module, self.meta_lr, init_fast_opts[i], Adam=True, device=device)
             models.append(fast_model), opts.append(fast_opt)
         return models, opts
 
@@ -364,7 +364,7 @@ class ParallelUpdate(nn.Module):
                                 #     print(f'Get data Error-{i} : Empty data')
                                 #     print(traceback.format_exc())
 
-                        with Timer(name=f'path-learning-{i}', thresh=5):
+                        with Timer(name=f'trajectory-learning-{i}', thresh=5):
                             meta_train_data, meta_test_data = split_image_and_label(batch_data, size=64, loo=True)
                             zero_and_update(opt, get_loss_and_acc(model.step(**meta_train_data)))
                             zero_and_update(opt, get_loss_and_acc(model.step(**meta_test_data)))

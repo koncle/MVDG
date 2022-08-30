@@ -170,7 +170,7 @@ def MVRML_paralleled(meta_model, train_data, meta_lr, epoch, args, engine, mode)
 
     trajectory, length = args.trajectory, args.length
     print('Meta lr : {}, loops : {}, trajectory : {}, length : {}'.format(meta_lr, inner_loops, trajectory, length))
-    devices = [int(args.gpu) + i for i in range(0, 3)]
+    devices = [int(args.gpu) + i for i in range(0, trajectory)]
     paralleled_devices = devices[:trajectory]
 
     # fast_opts = None if not hasattr(meta_model, 'fast_opts') else meta_model.fast_opts

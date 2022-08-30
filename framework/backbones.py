@@ -64,7 +64,7 @@ class Resnet(nn.Module):
 
     def get_lr(self, fc_weight):
         lrs = [
-            ([self.conv1, self.layer1, self.layer2, self.layer3, self.layer4], 1.0),
+            ([self.conv1, self.bn1, self.layer1, self.layer2, self.layer3, self.layer4], 1.0),
             (self.fc, fc_weight)
         ]
         return lrs
