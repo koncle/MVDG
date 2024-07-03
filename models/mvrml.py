@@ -194,3 +194,127 @@ def MVRML_paralleled(meta_model, train_data, meta_lr, epoch, args, engine, mode)
         [l.stop() for l in engine.loaders]
 
     return running_loss.get_average_dicts(), running_corrects.get_average_dicts()
+
+
+@TrainFuncs.register('mvrml_content')
+def MVRML_content(meta_model, train_data, meta_lr, epoch, args, engine, mode):
+    assert args.loader != 'standard'
+    device, meta_optimizers = engine.device, engine.optimizers
+    running_loss, running_corrects = AverageMeterDict(), AverageMeterDict()
+    meta_lr = meta_optimizers.param_groups[0]['lr'] / 50
+
+    trajectory, length = args.trajectory, args.length
+    print('Meta lr : {}, loops : {}, path : {}, length : {}'.format(meta_lr, len(train_data), trajectory, length))
+
+    iters = train_data
+
+    if not hasattr(engine, 'ensemble_model'):
+        ensemble_model = EnsembleModel()
+        engine.ensemble_model = ensemble_model
+        print('Init models')
+
+    ensemble_model = engine.ensemble_model
+
+    fast_opts = None if not hasattr(meta_model, 'fast_opts') else meta_model.fast_opts
+    for it in range(len(train_data)):
+        fast_models = []
+        for i in range(trajectory):
+            fast_model, fast_opts = init_network(meta_model, meta_lr, fast_opts, Adam=True, beta1=0.9, beta2=0.999)
+
+            for j in range(length):
+                data = iters.next()
+                data = to(data, device)
+                meta_train_data, meta_test_data = split_image_and_label(data, size=args.batch_size, loo=True)
+
+                meta_train_out = fast_model.step(**meta_train_data)
+                meta_train_loss = get_loss_and_acc(meta_train_out, running_loss, running_corrects)
+                zero_and_update(fast_opts, meta_train_loss)
+
+                meta_test_out = fast_model.step(**meta_test_data)
+                meta_test_loss = get_loss_and_acc(meta_test_out, running_loss, running_corrects)
+
+                meta_test_loss = meta_test_loss
+
+                zero_and_update(fast_opts, meta_test_loss)
+
+            fast_models.append(get_parameters(fast_model))
+
+        update_meta_model(meta_model, fast_models, meta_optimizers, meta_lr=1)
+        ensemble_model.update_model(meta_model)
+
+    AveragedModel(start_epoch=0, device=device).update_bn(train_data, epoch, iters=len(train_data) // 2, model=meta_model)
+    return running_loss.get_average_dicts(), running_corrects.get_average_dicts()
+
+
+
+@EvalFuncs.register('mvrml_content')
+def deepall_eval(model, eval_data, lr, epoch, args, engine, mode):
+    running_loss, running_corrects = AverageMeterDict(), AverageMeterDict()
+    device = engine.device
+
+    model.eval()
+
+    with torch.no_grad():
+        if isinstance(eval_data, (tuple, list)):
+            eval_data = eval_data[0]
+        for i, data_list in enumerate(eval_data):
+            data_list = to(data_list, device)
+            outputs = model(**data_list, epoch=epoch, step=len(eval_data) * epoch + i, engine=engine, train_mode='test')
+            get_loss_and_acc(outputs, running_loss, running_corrects)
+
+    ensemble_model = engine.ensemble_model
+
+    if mode == 'eval':
+        val_loss = running_loss.get_average_dicts()['main']
+        # ensemble_model.add_model(model, val_loss)
+        ensemble_model.update_loss(val_loss)
+
+    if mode == 'test':
+        # save_dict = {
+        #     'models': ensemble_model.cached_models,
+        #     'losses': ensemble_model.val_losses,
+        # }
+        # torch.save(save_dict, os.path.join(engine.path, 'models', 'Ensemble.pt'))
+
+        scales = [0, 0.5, 1, 3, 5, 10, 20]
+        models = []
+        for i, s in enumerate(scales):
+            avg_model = ensemble_model.get_avg_model(model, s)
+            avg_model = avg_model.to(device)
+            models.append(avg_model)
+
+        # AveragedModel(start_epoch=0, device=device).update_bn(engine.source_train, epoch, iters=len(engine.source_train) // 2, model=avg_model)
+        outs = [reset_model(m) for m in models]
+        loader = engine.source_train
+        with torch.no_grad():
+            if not hasattr(loader, 'next'):
+                loader = iter(loader)
+            for i in range(len(engine.source_train) // 2):
+                if hasattr(loader, 'next'):
+                    data_list = to(loader.next(), device)
+                else:
+                    data_list = to(next(loader), device)
+                [m(**data_list) for m in models]
+        [recover_model(m, *o) for m, o in zip(models, outs)]
+
+        with torch.no_grad():
+            if isinstance(eval_data, (tuple, list)):
+                eval_data = eval_data[0]
+            for i, data_list in enumerate(eval_data):
+                data_list = to(data_list, device)
+                for m, s in zip(models, scales):
+                    outputs = m(**data_list)
+                    get_loss_and_acc(outputs, running_loss, running_corrects, prefix='Ensemble-{}_'.format(s))
+        print('save to Ensemble.pt')
+        states = [m.state_dict() for m in models]
+
+        save_dict = {
+            'models': ensemble_model.cached_models,
+            'losses': ensemble_model.val_losses,
+            'states': states
+        }
+        torch.save(save_dict, os.path.join(engine.path, 'models', 'Ensemble.pt'))
+
+    loss, acc = running_loss.get_average_dicts(), running_corrects.get_average_dicts()
+
+    return acc['main'], (loss, acc)
